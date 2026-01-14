@@ -57,7 +57,7 @@ git push
 ### Add link to your repo below in the cell chunk:
 
 ```sh
-
+https://github.com/mairara/JSC370-Winter2026.git
 ```
 
 ---
@@ -179,9 +179,9 @@ For more information checkout [Creating a pull request](https://docs.github.com/
 * Add details of the pull request below (the commit id of your change (you can find this using `git log`)
 
 ```sh
-commit:
-Author:
-Date:
+commit:2932092049cd4ba103479c4f9b27830b560a4bcb
+Author: Maira <mairamasroor05@gmail.com>   
+Date: Wed Jan 14 13:44:54 2026 -0500
 ```
 
 ---
