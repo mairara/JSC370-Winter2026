@@ -1,0 +1,286 @@
+---
+title: "Lab 03 - EDA and Viz 1"
+subtitle: "JSC370 (Winter 2026)"
+date: "January 21, 2026"
+format:
+  live-html:
+    toc: true
+filters:
+  - r-wasm/live
+jupyter: python3
+execute:
+  enabled: false
+  echo: true
+  warning: false
+  message: false
+---
+
+
+# Learning Goals
+
+- Download [lab 3 here](https://github.com/JSC370/JSC370-2026/blob/main/labs/lab3/lab03-github.qmd)
+- Read in from github and get familiar with a meteorology dataset 
+- Plan out how to tackle the objective question
+- Step through the EDA "checklist" presented in the class slides
+- Make exploratory graphs and maps
+
+# Deliverables
+
+- Complete the code and summaries and upload your .qmd and rendered .html to Quercus
+
+# Lab Description
+
+We will work with similar meteorological data that was presented in lecture. Recall the dataset consists of weather station readings in the contiguous US. 
+
+**The objective of the lab is to find the weather station with the lowest elevation, find out where this location is (make a map), and make a time series plot of temperature at this station.**
+
+# Steps
+
+### 0. Load libraries
+
+Notes: 
+
+- import the necessary libraries
+- note setting pandas options for nicer display of the output
+- in the yaml above set enabled to true when you want the code to render
+
+```{python}
+import pandas as pd
+pd.set_option("display.float_format", "{:.2f}".format) 
+import numpy as np
+import matplotlib.pyplot as plt
+import geopandas as gpd
+import contextily as cx
+from IPython.display import display
+```
+
+
+### 1. Read in the data
+
+Connect to github and read in data with pandas.
+
+```{python}
+url = "https://raw.githubusercontent.com/JSC370/JSC370-2026/main/data/met_all_2025.gz"
+met = pd.read_csv(url)    
+```
+
+### 2. Check the memory size, dataset dimensions, and the header. How many columns, rows are there?
+
+- fill in where there are ... 
+
+
+```{python}
+met.memory_usage(deep=True).sum() / 1024**3 # convert to gb
+```
+
+```{python}
+met.shape[0]
+met.shape[1]
+```
+
+```{python}
+met.head
+```
+
+Summary:
+- Memory size: 2.7GB
+- Dataset Dimensions: 30 columns, 5381580 rows
+- Header is similar to that in class
+
+### 3. Look at data types of the variables in the dataset.
+
+```{python}
+met.info
+met.dtypes
+```
+
+Summary:
+- int, float, object (string)
+
+### 4. Take a closer look at the key variables (`temp` and `elev`). 
+
+- Are there missing data in these variables? If so, make sure they are coded correctly. 
+
+
+```{python}
+key_vars = ['temp', 'elev']
+
+met[key_vars].isnull().sum()
+
+```
+
+
+- Are there any unusual values that look suspicious?
+Yes Max of temperature is 999 which indicates that there can be a null value that is not coded as NA.  
+
+```{python}
+(met['temp'] == 999.9).sum() / met['temp'].count()
+# 3 percent of the values are null
+
+met['temp'] = met['temp'].replace(999.9, np.nan)
+```
+
+```{python}
+(met['temp'] == 999.9).sum() 
+met[key_vars].isnull().sum()
+
+# now it is displayed correctly. 
+```
+
+```{python}
+
+minT = met['temp'].min()
+maxT = met['temp'].max()
+
+minE = met['elev'].min()
+maxE = met['elev'].max()
+
+print(minT, maxT, minE, maxE)
+
+```
+
+Summary:
+- Add your summary here
+- Temperature had max 999 which is suspicious and indicates that null values are not coded in correctly. Replacing it will nan now correctly represents .isnull().sum() as non-zero for temp (elevate is fine though as there are no 999 or other common placeholders.)
+- If we had the documentation, we would probably know exactly what nAN values are assigned with. 
+- the min and max of temp and elevation in that order is -40, 56, -35, 3680.
+
+
+### 5. Check the data against an external data source and make any other adjustments.
+
+- Check that the range of elevations make sense. Google or ChatGPT is your friend here.
+- Fix any problems that arise in your checks.
+
+-
+
+```{python}
+
+# met.loc[...] = np.nan alr replaced in the previous section
+met[['temp']].describe().round(4)
+```
+
+Summary:
+- Chatgpt says that slighlty below 0m is rare extremes but the common range is 0-2000m. -35 is also okay because it just means below sea level, which is common for costal regions. 3680m is high but still within a realistic range (especially for mountain/high altitude staions - with the heightest in US beign 4000+) But we should check the latitude and longitude to see if it reflects the correct location. 
+
+```{python}
+cold_temps = met[met['temp'] < 0]
+
+# display data here extract lat and lon and check google
+
+cold_temps[['temp', 'lat', 'lon']].sort_values('temp').head(20)
+```
+
+Summary:
+There are some -40s so I will check the lat and lon and see if this is in an artic area online.
+
+- (29.84, -82.05) is in the middle of Florida with -40c so that does not seem correct. SImilarily (28.21, -100) is in Texas. -20 also seems implaussable in this area. 
+- The other values are in the ocean and do not have absurd temperatures. 
+
+```{python}
+
+# Fix up data here, remove implausible values
+met.loc[met['temp'] <= -20, 'temp'] = np.nan
+
+```
+
+
+
+## 6. Answer research questions
+
+Remember to keep the initial questions in mind. We want to pick out the weather station with minimum elevation and examine its temperature.
+
+Some ideas for steps: 
+1. subset the data for the weather station with minimum elevation
+2. look at histograms of temperature
+3. make a time series plot (need to create date variable)
+4. make a map to see where it is
+
+
+### 6a. Subset minimum elevation site
+
+```{python}
+# Subset data for the weather station with minimum elevation
+min_elev = met['elev'].min()
+min_elev_site = met[met['elev'] == min_elev]
+
+```
+
+### 6b. Histogram of temperature at minimum elevation site
+
+```{python}
+plt.hist(min_elev_site['temp'].dropna(), bins=50)
+plt.xlabel("Temperature (°C)")
+plt.ylabel("Count")
+plt.title("Hourly Temperature")
+plt.show()
+```
+
+The temperature is normally around 25-40 degrees celcius but there are a couple values below 20 or above 50. 
+### 6c. Create date variable and time series plot
+
+- Look at the time series of temperature at this location. For this we will need to create a date-time variable for the x-axis.
+
+- Summarize any trends that you see in these time series plots.
+
+
+```{python}
+# Create a date variable for min_elev_station
+min_elev_station = min_elev_station.copy()
+min_elev_station['date'] = pd.to_datetime(
+    min_elev_station[['year', 'month', 'day', 'hour']]
+)
+
+# Sort by date
+min_elev_station = min_elev_station.sort_values('date')
+
+# Create line plot of temperature by date
+
+plt.plot(min_elev_station['date'], min_elev_station['temp'], linewidth = 0.9, alpha = 0.7)
+plt.xlabel("Date")
+plt.ylabel("Temperature (°C)")
+plt.title("Hourly Temperature at Minimum Elevation Station")
+plt.grid(True, alpha = 0.3)
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+```
+
+Summarize time series plot: 
+- There is only 2 months of data
+- Between the months of june and auguest, the temperature stays around the 20-40°C range
+- It goes up and down alot which is probably because its colder in the night, and warmer in the day
+- In august the lows are around like ~35 but not always.
+
+
+
+### 6d. Where is the lowest weather station?
+
+```{python}
+station_location = min_elev_station[['lat', 'lon', 'elev']].drop_duplicates()
+
+lat = station_location['lat'].iloc[0]
+lon = station_location['lon'].iloc[0]
+elev = station_location['elev'].iloc[0]
+
+# make elev into GeoDataFrame for mapping
+gdf = gpd.GeoDataFrame(
+    {'elevation': [elev]},
+    geometry=gpd.points_from_xy([lon], [lat]),
+    crs='EPSG:4326'
+)
+
+# Convert to Web Mercator for basemap
+gdf = gdf.to_crs('EPSG:3857')
+
+# map
+fig, ax = plt.subplots(figsize=(10, 8))
+gdf.plot(ax=ax, color='red', markersize=300, marker='*', edgecolor='black', linewidth=2, zorder=5)
+cx.add_basemap(ax, source=cx.providers.OpenStreetMap.Mapnik)
+ax.set_xlabel('Longitude')
+ax.set_ylabel('Latitude')
+ax.set_title(f'Lowest Elevation Station (Elevation: {elev} m)')
+plt.show()
+```
+
+Summarize where the lowest elevation station is located.
+The lowest elevation station is located in Arizona, Near Imperial Valley and is located in the little sea there, which makes sense for it to have an elevation less than -35m.

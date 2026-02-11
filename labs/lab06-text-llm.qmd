@@ -1,0 +1,555 @@
+---
+title: "Lab 06 - Text Mining"
+format:
+  html:
+    embed-resources: true
+jupyter: python3
+---
+
+# Learning goals
+
+- Use tokenization and n-grams to extract features from text
+- Use pandas and plotnine to analyze and visualize text data
+- Apply sentence tokenization to analyze text structure
+- Apply topic modeling using scikit-learn and see if topics align with medical specialties
+
+# Lab description
+
+For this lab we will be working with the medical record transcriptions from https://www.mtsamples.com/ available at https://github.com/salgadev/medical-nlp.
+
+# Deliverables
+
+1. Questions 1-7 answered, rendered to html and uploaded to Quercus.
+
+2. Add link to your github repo in your html.
+https://github.com/mairara/JSC370-Winter2026.git
+
+### Setup packages
+
+You should have the following packages installed: `pandas`, `numpy`, `plotnine`, `nltk`, `wordcloud`, and `scikit-learn`.
+
+```{python}
+#| eval: true
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from collections import Counter
+import re
+
+# Plotting with ggplot2 syntax
+from plotnine import *
+
+# Text processing
+import nltk
+from nltk.tokenize import word_tokenize, sent_tokenize
+from nltk.corpus import stopwords
+from nltk.util import ngrams
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('punkt_tab')
+
+# Word cloud
+from wordcloud import WordCloud
+
+# Topic modeling
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.decomposition import LatentDirichletAllocation
+
+
+```
+
+## Read in the Medical Transcriptions
+
+Loading in reference transcription samples from https://www.mtsamples.com/
+
+```{python}
+#| eval: true
+
+mt_samples = pd.read_csv("https://raw.githubusercontent.com/salgadev/medical-nlp/master/data/mtsamples.csv")
+mt_samples = mt_samples[['description', 'medical_specialty', 'transcription']]
+
+mt_samples.head()
+```
+
+
+## Question 1: What specialties do we have?
+
+We can use `value_counts()` from pandas to figure out how many different medical specialties are in the data. Are these categories related? overlapping? evenly distributed? Make a bar plot.
+
+```{python}
+#| eval: false
+
+specialty_counts = mt_samples['medical_specialty'].value_counts().reset_index()  # Hint: count categories
+specialty_counts.columns = ['medical_specialty', 'count']
+
+display(ggplot(specialty_counts, aes(x='reorder(medical_specialty, count)', y='count'))  # Hint: use the counts dataframe
+ + geom_bar(stat='identity', fill='steelblue')
+ + coord_flip()
+ + labs(x='Medical Specialty', y='Count', title='Distribution of Medical Specialties')
+ + theme_minimal()
+ + theme(figure_size=(12, 8))
+)
+```
+
+Summarize the top medical specialties:
+
+The top medical specialty is Surgery by far, followed by consultation (History and Phy), and Cardiovascular. 
+
+## Question 2: Tokenize
+
+- Tokenize the words in the `transcription` column
+- Count the number of times each token appears
+- Visualize the top 20 most frequent words with a bar plot
+
+
+
+```{python}
+#| eval: false
+
+# Tokenize all transcriptions
+def tokenize_text(text):
+    if pd.isna(text):
+        return []
+    return word_tokenize(text.lower())  # Hint: NLTK word tokenizer
+
+all_tokens = []
+for text in mt_samples['transcription']:
+    all_tokens.extend(tokenize_text(text))
+
+# Count tokens
+token_counts = Counter(all_tokens) # Hint: count token frequencies
+
+top_20 = token_counts.most_common(20)  # Hint: top N entries
+
+# Create dataframe for plotting
+top_20_df = pd.DataFrame(top_20, columns=['word', 'count'])  # Hint: the top-20 list
+
+# Bar plot with plotnine
+display(ggplot(top_20_df, aes(x='reorder(word, count)', y='count'))  # Hint: the top-20 dataframe
+ + geom_bar(stat='identity', fill='steelblue')
+ + coord_flip()
+ + labs(x='Word', y='Frequency', title='Top 20 Most Frequent Words')
+ + theme_minimal()
+ + theme(figure_size=(10, 6))
+)
+
+```
+
+
+Summarize the top 20 tokens and explain what insights (if any) do we get?
+
+The top 20 tokens contained mostly stop words such as "the, and, was" and punctuation. The only intersting word is patient. This suggests we should remove stopwords. 
+
+
+## Question 3: Stopwords
+
+- Redo Question 2 but remove stopwords
+- Use NLTK's stopwords list
+- Use regex to remove numbers
+
+
+```{python}
+#| eval: false
+
+# Get English stopwords
+stop_words = set(stopwords.words('english'))  # Hint: get stopword list
+
+# Add custom stopwords
+custom_stopwords = {'patient', 'also', 'using', 'used'}
+stop_words = stop_words.union(custom_stopwords)
+
+# Filter tokens
+filtered_tokens = [
+    token for token in all_tokens
+    if token not in stop_words # or not re.match(r'^d+$', token)
+    and not token.isdigit()  # Hint: filter out pure numbers
+    and len(token) > 2  # Remove very short tokens
+    and token.isalpha()  # Keep only alphabetic tokens
+]
+
+# Count filtered tokens
+filtered_counts = Counter(filtered_tokens)
+top_20_filtered = filtered_counts.most_common(20)
+
+# Create dataframe for plotting
+top_20_filtered_df = pd.DataFrame(top_20_filtered, columns=['word', 'count'])
+
+# Bar plot with plotnine
+display(ggplot(top_20_filtered_df, aes(x='reorder(word, count)', y='count'))
+ + geom_bar(stat='identity', fill='steelblue')
+ + coord_flip()
+ + labs(x='Word', y='Frequency', title='Top 20 Most Frequent Words (Stopwords Removed)')
+ + theme_minimal()
+ + theme(figure_size=(10, 6))
+)
+
+# Word cloud
+wordcloud = WordCloud(width=800, height=400, background_color='white').generate_from_frequencies(dict(top_20_filtered))
+plt.figure(figsize=(10, 5))
+plt.imshow(wordcloud, interpolation='bilinear')
+plt.axis('off')
+plt.title('Word Cloud (Stopwords Removed)')
+plt.show()
+
+```
+
+Summarize: What do we see when you remove stopwords? Does it give us a better idea of what the text is about?
+
+After removing stopwards, we get the top frequent words such as right, left, procedure, normal, performed, etc. This gives a better idea of what the text is about as we are not bogged down by unuseful punctuation and stopwards. 
+
+## Question 3b: Custom stopwords
+
+- Import clinical-specific stopwords from the github repository and apply additional filtering. These stopwords are tailored for medical/clinical text and include terms like "patient", "medical", "clinical", etc.
+
+- Try further customizing your stopwords list to include 3-4 additional words of your own that do not appear informative
+
+```{python}
+#| eval: false
+
+# Import clinical stopwords from the medical-nlp repository
+import urllib.request
+
+clinical_stopwords_url = "https://raw.githubusercontent.com/salgadev/medical-nlp/master/data/clinical-stopwords.txt"
+response = urllib.request.urlopen(clinical_stopwords_url)
+clinical_stopwords_raw = response.read().decode('utf-8')
+
+
+clinical_stopwords = set()
+for line in clinical_stopwords_raw.split('\n'):
+    line = line.strip().lower()
+    if line and not line.startswith('#'):
+        clinical_stopwords.add(line)
+
+print(f"Number of clinical stopwords: {len(clinical_stopwords)}")
+print(f"Sample clinical stopwords: {list(clinical_stopwords)[:20]}")
+```
+
+
+```{python}
+#| eval: false
+
+# Combine NLTK stopwords with clinical stopwords
+all_stopwords = stop_words.union(clinical_stopwords)
+
+# Add custom stopwords
+additional_stopwords = {"hence", "was", "were", "thats", "else", "right", "left"}  # Hint: add 3-4 clinical filler words
+all_stopwords = all_stopwords.union(additional_stopwords)  # Hint: set merge
+
+# Filter tokens using combined stopwords
+clinical_filtered_tokens = [
+    token for token in all_tokens
+    if token not in all_stopwords
+    and not re.match(r'^\d+$', token)
+    and len(token) > 2
+    and token.isalpha()
+]
+
+# Count filtered tokens
+clinical_filtered_counts = Counter(clinical_filtered_tokens)  # Hint: tokens after clinical filtering
+top_20_clinical = clinical_filtered_counts.most_common(20)  # Hint: top N
+
+# Create dataframe for plotting
+top_20_clinical_df = pd.DataFrame(top_20_clinical, columns=['word', 'count'])  # Hint: top list for plotting
+
+# Bar plot with plotnine
+display(ggplot(top_20_clinical_df, aes(x='reorder(word, count)', y='count'))  # Hint: clinical top-20 dataframe
+ + geom_bar(stat='identity', fill='tomato')
+ + coord_flip()
+ + labs(x='Word', y='Frequency', title='Top 20 Most Frequent Words (Clinical Stopwords Removed)')
+ + theme_minimal()
+ + theme(figure_size=(10, 6))
+)
+
+```
+
+Summarize: How many clinical stopwords are there? What additional words did you remove? Do the results differ significantly when using clinical stopwords vs. general stopwords?
+
+There are 806 clinical stopwards, and I chose to remove a few extra words that I noticed in the sample that wasnt useful ("hence", "was", "were", "thats", "else", "right", "left"). The results do differ as when we were using general stopwards (without removing any punctuation or any other changes) we were not getting ANY useful information, but after removing clinical stopwards we get more useful insights like how often history is referenced, and more examples like incision, anestheisa, diagnoses, arterior, etc. 
+---
+
+## Question 4: Bigrams
+
+Tokenize the stopword-filtered transcriptions into bigrams and visualize the top 20 most frequent bigrams.
+
+```{python}
+#| eval: false
+
+def get_bigrams_from_text(text):
+    if pd.isna(text):  # Hint: current text input
+        return []
+    tokens = word_tokenize(text.lower())  # Hint: lowercase text
+    # Filter tokens using clinical stopwords
+    tokens = [t for t in tokens if t not in all_stopwords and t.isalpha() and len(t) > 2]  # Hint: minimum length
+    return list(ngrams(tokens, 2))  # Hint: bigram helper
+
+
+all_bigrams = []
+for text in mt_samples['transcription']:
+    all_bigrams.extend(get_bigrams_from_text(text))
+
+bigram_counts = Counter(all_bigrams)  # Hint: count bigrams
+top_20_bigrams = bigram_counts.most_common(20)
+
+# Create dataframe for bigrams
+bigram_df = pd.DataFrame([
+    {'bigram': ' '.join(bg), 'count': count}
+    for bg, count in top_20_bigrams
+])
+
+
+display(ggplot(bigram_df, aes(x='reorder(bigram, count)', y='count'))  # Hint: bigram dataframe
+ + geom_bar(stat='identity', fill='steelblue')
+ + coord_flip()
+ + labs(x='Bigram', y='Frequency', title='Top 20 Bigrams')
+ + theme_minimal()
+ + theme(figure_size=(10, 6))
+)
+```
+
+Summarize: do the bigrams make sense
+
+Yes, they provide more context to the words such as operating room, blood pressure, preoperative diagnosis, postoperative diagnoses. Some are a little more confusing such as prepped draped, and draped usual, but overall they make sense. 
+
+## Question 5: Examining bigram words
+
+Using the results from the bigram, pick a word and count the words that appear before and after it, and create a plot of the top 20.
+
+```{python}
+#| eval: false
+
+# Pick a word to examine (e.g., 'blood', 'operating', 'diagnosis')
+target_word = 'operating'  # Hint: choose a common token
+
+# Find bigrams containing the target word
+before_words = []
+after_words = []
+
+for bigram, count in bigram_counts.items():
+    if bigram[1] == target_word:  # Hint: compare to chosen token
+        before_words.extend([bigram[0]] * count)
+    if bigram[0] == target_word:  # Hint: compare to chosen token
+        after_words.extend([bigram[1]] * count)
+
+# Count words
+before_counts = Counter(before_words).most_common(20)  # Hint: top N
+after_counts = Counter(after_words).most_common(20)  # Hint: top N
+
+# Create dataframes
+before_df = pd.DataFrame(before_counts, columns=['word', 'count'])  # Hint: counts before target
+before_df['position'] = 'before'
+
+after_df = pd.DataFrame(after_counts, columns=['word', 'count'])  # Hint: counts after target
+after_df['position'] = 'after'
+```
+
+```{python}
+#| eval: false
+
+# Plot words before
+display(ggplot(before_df, aes(x='reorder(word, count)', y='count'))  # Hint: dataframe of words before
+ + geom_bar(stat='identity', fill='steelblue')
+ + coord_flip()
+ + labs(x='Word', y='Frequency', title=f'Words Before "{target_word}"')  # Hint: chosen word
+ + theme_minimal()
+ + theme(figure_size=(7, 6))
+)
+```
+
+
+```{python}
+#| eval: false
+
+# Plot words after
+display(ggplot(after_df, aes(x='reorder(word, count)', y='count'))  # Hint: dataframe of words after
+ + geom_bar(stat='identity', fill='coral')
+ + coord_flip()
+ + labs(x='Word', y='Frequency', title=f'Words After "{target_word}"')  # Hint: chosen word
+ + theme_minimal()
+ + theme(figure_size=(7, 6))
+)
+```
+
+Briefly summarize the bigram before and after words.
+
+The words before the target word 'operating', are a little hard to interpret such as taken, brough, placed. I believe its because we removed the stop words such as 'to' and 'in' so it would have actually stated 'taken to operating' or 'brought to operating'. The words placed after operating are more comprehensible, and are normally nouns/objects we will find in the operating room such as "room", "table", "microscope", "field", etc. 
+
+## Question 6: Sentence Tokenization
+
+Tokenize the transcriptions into sentences and analyze sentence-level statistics.
+
+- Count the number of sentences per transcription
+- Calculate the average sentence length (in words) per transcription
+- Plot the distribution of average sentence length
+- Make a boxplot of the average sentence length by specialty
+
+```{python}
+#| eval: false
+
+# Tokenize transcriptions into sentences
+def get_sentence_stats(text):
+    if pd.isna(text):
+        return {'num_sentences': 0, 'avg_sentence_length': 0}
+
+    sentences = sent_tokenize(text)  # Hint: sentence tokenizer
+    num_sentences = len(sentences)
+
+    if num_sentences == 0:
+        return {'num_sentences': 0, 'avg_sentence_length': 0}
+
+    # Calculate average sentence length in words
+    sentence_lengths = [len(word_tokenize(sent)) for sent in sentences]
+    avg_length = np.mean(sentence_lengths)
+
+    return {'num_sentences': num_sentences, 'avg_sentence_length': avg_length}  # Hint: use computed values
+
+# Apply to all transcriptions
+sentence_stats = mt_samples['transcription'].apply(get_sentence_stats)
+mt_samples['num_sentences'] = sentence_stats.apply(lambda x: x['num_sentences'])  # Hint: stats series
+mt_samples['avg_sentence_length'] = sentence_stats.apply(lambda x: x['avg_sentence_length'])
+
+# Summary statistics
+print("Sentence Statistics Summary:")
+print(mt_samples[['num_sentences', 'avg_sentence_length']].describe())
+
+# Aggregate sentence stats by specialty for boxplot
+specialty_sentence_stats = (
+    mt_samples[mt_samples['avg_sentence_length'] > 0]
+    .groupby('medical_specialty', as_index=False)['avg_sentence_length']
+    .mean()
+)
+display(specialty_sentence_stats)
+```
+
+
+```{python}
+#| eval: false
+
+display(ggplot(mt_samples[mt_samples['avg_sentence_length'] > 0], aes(x='avg_sentence_length'))  # Hint: column name
+ + geom_histogram(bins=30, fill='coral', color='white', alpha=0.7)
+ + labs(x='Average Sentence Length (words)', y='Count', title='Distribution of Average Sentence Length')
+ + theme_minimal()
+ + theme(figure_size=(10, 5))
+)
+```
+
+
+
+```{python}
+#| eval: false
+
+display(ggplot(specialty_sentence_stats, aes(x='reorder(medical_specialty, avg_sentence_length)', y='avg_sentence_length'))  # Hint: aggregated by specialty
+ + geom_boxplot(fill='coral', alpha=0.7)
+ + coord_flip()
+ + labs(x='Medical Specialty', y='Average Sentence Length (words)', title='Average Sentence Length by Medical Specialty')
+ + theme_minimal()
+ + theme(figure_size=(10, 6))
+)
+```
+
+Summarize: Do you notice any patterns sentence length across different medical specialties?
+
+Yes the average sentence length really varies amongst medical specialties. Funny enough, Speech department has the highest average length, followed by Office Notes, Pathology and Dentistry. The Loweset average sentence length is Hospice, followed by Chiropatric and Discharge Summary.
+---
+
+## Question 7: Topic Models
+
+See if there are any themes in the data by using a topic model (LDA).
+- Remove combined NLTK + clinical stopwords
+- Use scikit-learn's CountVectorizer to create a document-term matrix
+- Use LatentDirichletAllocation for topic modeling
+- Try different k (n_components) values (try 3 and 5)
+- Create a visualization of the topics
+
+```{python}
+#| eval: false
+
+# Prepare text data
+texts = mt_samples['transcription'].dropna().tolist()
+
+vectorizer = CountVectorizer(
+    max_df=0.95,  # Ignore terms that appear in >95% of documents (filters common words)
+    min_df=2,     # Ignore terms that appear in <2 documents (ignores very rare words)
+    stop_words=list(all_stopwords),
+    max_features=1000
+)
+dtm = vectorizer.fit_transform(texts)
+```
+
+```{python}
+#| eval: false
+
+n_topics = 5  # Hint: number of topics
+lda = LatentDirichletAllocation(
+    n_components=n_topics,  # Hint: use topic count
+    random_state=42,
+    max_iter=10
+)
+lda.fit(dtm)
+
+feature_names = vectorizer.get_feature_names_out()
+
+# Extract top words for each topic into a dataframe
+def get_topic_df(model, feature_names, n_top_words=10):
+    rows = []
+    for topic_idx, topic in enumerate(model.components_):
+        top_indices = topic.argsort()[:-n_top_words - 1:-1]
+        for rank, idx in enumerate(top_indices):
+            rows.append({
+                'topic': f'Topic {topic_idx + 1}',
+                'word': feature_names[idx],
+                'weight': topic[idx],
+                'rank': rank
+            })
+    return pd.DataFrame(rows)
+
+
+topic_df = get_topic_df(lda, feature_names, 10)  # Hint: model, vocab list, top words
+
+# Display top words per topic
+for topic in topic_df['topic'].unique():
+    words = topic_df[topic_df['topic'] == topic]['word'].tolist()
+    print(f"{topic}: {', '.join(words)}")
+
+# Visualize topics with faceted plot
+display(ggplot(topic_df, aes(x='reorder(word, weight)', y='weight'))  # Hint: topic dataframe
+ + geom_bar(stat='identity', fill='steelblue')
+ + coord_flip()
+ + facet_wrap('~topic', scales='free_y', ncol=3)
+ + labs(x='Word', y='Weight', title='Top Words per Topic (LDA)')
+ + theme_minimal()
+ + theme(figure_size=(14, 8), strip_text=element_text(size=10))
+)
+```
+
+Summarize: is it clearer when there are 3 or 5 topics?
+
+I think it is clearer when there are 3 topics than 5 topics, because when there is 5 the words are so spread out that its hard to come up with a specific topic. With 3 topics, I believe the topics are medical research words, operating words, and diagnosis words. 
+
+- Now do a cross tab of the 5 topics and the medical specialties.
+
+```{python}
+#| eval: false
+
+# Assign documents to topics and compare with actual specialties
+doc_topic_dist = lda.transform(dtm)
+dominant_topics = doc_topic_dist.argmax(axis=1)
+
+# Add to dataframe
+mt_samples_with_topics = mt_samples.dropna(subset=['transcription']).copy()
+mt_samples_with_topics['dominant_topic'] = [f'Topic {t+1}' for t in dominant_topics]
+
+# Cross-tabulation of topics vs specialties (top 5 specialties)
+top_5_specialties = mt_samples_with_topics['medical_specialty'].value_counts().head(5).index.tolist()  # Hint: number of specialties
+cross_tab = pd.crosstab(
+    mt_samples_with_topics[mt_samples_with_topics['medical_specialty'].isin(top_5_specialties)]['medical_specialty'],
+    mt_samples_with_topics[mt_samples_with_topics['medical_specialty'].isin(top_5_specialties)]['dominant_topic']
+)
+print("\nCross-tabulation of Topics vs Top 5 Specialties:")
+print(cross_tab)
+display(cross_tab)
+```
+
+Summarize: What themes emerge from the topic modeling? Do the topics align with the medical specialties?
+
+Topic 5 is the most common for Cardiovasuclar, which tracks as we have words such as artery, pulmonary, and cathetar. Similarily, Topic 3 is most common for Consultation and this makes sense as there are words such as histroy, past, denies in Topic 3. I believe the topics do align with medical specialties. A common theme is that the specialities do agree with all topics to some extent, but there is always one topic that is dominating by a large amount. 
