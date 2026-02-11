@@ -29,7 +29,7 @@ https://github.com/mairara/JSC370-Winter2026.git
 You should have the following packages installed: `pandas`, `numpy`, `plotnine`, `nltk`, `wordcloud`, and `scikit-learn`.
 
 ```{python}
-#| eval: true
+
 
 import pandas as pd
 import numpy as np
@@ -64,7 +64,7 @@ from sklearn.decomposition import LatentDirichletAllocation
 Loading in reference transcription samples from https://www.mtsamples.com/
 
 ```{python}
-#| eval: true
+
 
 mt_samples = pd.read_csv("https://raw.githubusercontent.com/salgadev/medical-nlp/master/data/mtsamples.csv")
 mt_samples = mt_samples[['description', 'medical_specialty', 'transcription']]
@@ -78,7 +78,7 @@ mt_samples.head()
 We can use `value_counts()` from pandas to figure out how many different medical specialties are in the data. Are these categories related? overlapping? evenly distributed? Make a bar plot.
 
 ```{python}
-#| eval: false
+
 
 specialty_counts = mt_samples['medical_specialty'].value_counts().reset_index()  # Hint: count categories
 specialty_counts.columns = ['medical_specialty', 'count']
@@ -105,7 +105,7 @@ The top medical specialty is Surgery by far, followed by consultation (History a
 
 
 ```{python}
-#| eval: false
+
 
 # Tokenize all transcriptions
 def tokenize_text(text):
@@ -150,7 +150,7 @@ The top 20 tokens contained mostly stop words such as "the, and, was" and punctu
 
 
 ```{python}
-#| eval: false
+
 
 # Get English stopwords
 stop_words = set(stopwords.words('english'))  # Hint: get stopword list
@@ -205,7 +205,7 @@ After removing stopwards, we get the top frequent words such as right, left, pro
 - Try further customizing your stopwords list to include 3-4 additional words of your own that do not appear informative
 
 ```{python}
-#| eval: false
+
 
 # Import clinical stopwords from the medical-nlp repository
 import urllib.request
@@ -227,7 +227,7 @@ print(f"Sample clinical stopwords: {list(clinical_stopwords)[:20]}")
 
 
 ```{python}
-#| eval: false
+
 
 # Combine NLTK stopwords with clinical stopwords
 all_stopwords = stop_words.union(clinical_stopwords)
@@ -273,7 +273,7 @@ There are 806 clinical stopwards, and I chose to remove a few extra words that I
 Tokenize the stopword-filtered transcriptions into bigrams and visualize the top 20 most frequent bigrams.
 
 ```{python}
-#| eval: false
+
 
 def get_bigrams_from_text(text):
     if pd.isna(text):  # Hint: current text input
@@ -316,7 +316,7 @@ Yes, they provide more context to the words such as operating room, blood pressu
 Using the results from the bigram, pick a word and count the words that appear before and after it, and create a plot of the top 20.
 
 ```{python}
-#| eval: false
+
 
 # Pick a word to examine (e.g., 'blood', 'operating', 'diagnosis')
 target_word = 'operating'  # Hint: choose a common token
@@ -344,7 +344,7 @@ after_df['position'] = 'after'
 ```
 
 ```{python}
-#| eval: false
+
 
 # Plot words before
 display(ggplot(before_df, aes(x='reorder(word, count)', y='count'))  # Hint: dataframe of words before
@@ -358,7 +358,7 @@ display(ggplot(before_df, aes(x='reorder(word, count)', y='count'))  # Hint: dat
 
 
 ```{python}
-#| eval: false
+
 
 # Plot words after
 display(ggplot(after_df, aes(x='reorder(word, count)', y='count'))  # Hint: dataframe of words after
@@ -384,7 +384,7 @@ Tokenize the transcriptions into sentences and analyze sentence-level statistics
 - Make a boxplot of the average sentence length by specialty
 
 ```{python}
-#| eval: false
+
 
 # Tokenize transcriptions into sentences
 def get_sentence_stats(text):
@@ -423,7 +423,7 @@ display(specialty_sentence_stats)
 
 
 ```{python}
-#| eval: false
+
 
 display(ggplot(mt_samples[mt_samples['avg_sentence_length'] > 0], aes(x='avg_sentence_length'))  # Hint: column name
  + geom_histogram(bins=30, fill='coral', color='white', alpha=0.7)
@@ -436,7 +436,7 @@ display(ggplot(mt_samples[mt_samples['avg_sentence_length'] > 0], aes(x='avg_sen
 
 
 ```{python}
-#| eval: false
+
 
 display(ggplot(specialty_sentence_stats, aes(x='reorder(medical_specialty, avg_sentence_length)', y='avg_sentence_length'))  # Hint: aggregated by specialty
  + geom_boxplot(fill='coral', alpha=0.7)
@@ -462,7 +462,7 @@ See if there are any themes in the data by using a topic model (LDA).
 - Create a visualization of the topics
 
 ```{python}
-#| eval: false
+
 
 # Prepare text data
 texts = mt_samples['transcription'].dropna().tolist()
@@ -477,7 +477,7 @@ dtm = vectorizer.fit_transform(texts)
 ```
 
 ```{python}
-#| eval: false
+
 
 n_topics = 5  # Hint: number of topics
 lda = LatentDirichletAllocation(
@@ -529,7 +529,7 @@ I think it is clearer when there are 3 topics than 5 topics, because when there 
 - Now do a cross tab of the 5 topics and the medical specialties.
 
 ```{python}
-#| eval: false
+
 
 # Assign documents to topics and compare with actual specialties
 doc_topic_dist = lda.transform(dtm)
