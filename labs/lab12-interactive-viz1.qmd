@@ -1,0 +1,408 @@
+---
+title: "Lab 12 - Interactive Visualization"
+format:
+  html:
+    embed-resources: true
+    toc: true
+# execute:
+#   eval: false
+---
+
+##### Download lab `.qmd` [here](https://github.com/JSC370/JSC370-2026/blob/main/labs/lab12/lab12-interactive-viz1.qmd)
+
+##### Download data: [starbucks-locations.csv](https://github.com/JSC370/JSC370-2026/blob/main/data/starbucks-locations.csv), [starbucks-menu-nutrition.csv](https://github.com/JSC370/JSC370-2026/blob/main/data/starbucks-menu-nutrition.csv), [us_state_pop.csv](https://github.com/JSC370/JSC370-2026/blob/main/data/us_state_pop.csv), [states.csv](https://github.com/JSC370/JSC370-2026/blob/main/data/states.csv)
+
+```{python}
+#| label: setup
+#| echo: false
+#| warning: false
+import warnings
+warnings.filterwarnings("ignore")
+```
+
+# Learning Goals
+
+- Read in and process Starbucks data.
+- Create interactive visualizations of different types using `plotly.express` and `plotly.graph_objects`.
+- Customize hoverinfo and other plot features.
+- Create a Choropleth map.
+- Build a simple interactive dashboard with Dash.
+
+# Lab Description
+
+We will work with two Starbucks datasets, one on the store locations (global) and one for the nutritional data for their food and drink items. We will do some text analysis of the menu items.
+
+# Deliverables
+
+Upload an html file to Quercus and make sure the figures remain interactive. Use `embed-resources: true` in your yaml.
+
+# Steps
+
+### 0. Install and load libraries
+
+```{python}
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from collections import Counter
+import re
+```
+
+### 1. Read in the data
+
+- There are 4 datasets to read in: Starbucks locations, Starbucks nutrition, US population by state, and US state abbreviations. All of them are available in the lab folder.
+
+```{python}
+sb_locs = pd.read_csv("starbucks-locations.csv")
+
+sb_nutr = pd.read_csv("starbucks-menu-nutrition.csv")
+sb_nutr.columns = sb_nutr.columns.str.strip()
+
+usa_pop = pd.read_csv("us_state_pop.csv")
+
+usa_states = pd.read_csv("states.csv")
+```
+
+### 2. Look at the data
+
+- Inspect each dataset to look at variable names and ensure it was imported correctly.
+
+```{python}
+# YOUR CODE HERE
+display(sb_locs.head())
+display(sb_nutr.head())
+display(usa_pop.head())
+display(usa_states.head())
+display(sb_locs['Country'].unique())
+```
+
+### 3. Format and merge the data
+
+- Subset Starbucks location data to the US.
+- Create counts of Starbucks stores by state.
+- Merge population and state abbreviations with the store count by state.
+- Inspect the range of values for each variable.
+
+```{python}
+# Subset to US
+sb_usa = sb_locs[sb_locs["Country"] == "US"]
+
+# Count stores by state
+sb_locs_state = (
+    sb_usa
+    .groupby('State/Province')
+    .size()
+    .reset_index(name="n_stores")
+)
+
+# Merge population with state abbreviations
+usa_pop_abbr = usa_pop.merge(usa_states, left_on='state', right_on='State', how="left")
+
+# Merge store counts with population data
+sb_locs_state = sb_locs_state.merge(usa_pop_abbr, left_on='State/Province', right_on='Abbreviation', how="left")[['State/Province', 'n_stores', 'population']].rename(columns={'State/Province': 'state'})
+
+display(sb_locs_state)
+```
+
+### 4. Use `plotly.express` for EDA
+
+Answer the following questions:
+
+- **4a)** Are the number of Starbucks proportional to the population of a state? (scatterplot) Add hover data for state, population, number of stores, and annotate with State/Province.
+
+```{python}
+# YOUR CODE HERE
+fig = px.scatter(
+    sb_locs_state,
+     x='population', 
+     y='n_stores', 
+     hover_data=['state'], 
+     text = 'state',
+     title = 'Starbucks Stores vs Population by State',
+     labels= {'population': 'Population', 'n_stores': 'Number of Stores'}
+)
+fig.update_traces(textposition = 'top center', marker_size = 6)
+fig.show()
+```
+
+- 4a) Answer: There is a a quadratic relationship between Population and Number of Stores, which indicates that it is proportional by state. As the population goes up, so does the numebr of stores. 
+
+- **4b)** Is the caloric distribution of Starbucks menu items different for drinks and food? (histogram) Make sure to add `barmode="overlay"` and choose a representative number of bins with `nbins`.
+
+```{python}
+# YOUR CODE HERE
+fig = px.histogram(
+    sb_nutr, 
+    x='Calories', 
+    color = 'Category', 
+    barmode= 'overlay', 
+    nbins=20)
+fig.show()
+```
+
+- 4b) Answer: The Calorie distribution is different for drinks vs food. Drinks, overall, have a lower calories than food, and has a left skewed distribution. Food, on the other hand, has ~Normal distribution, centered at 400 calories. 
+
+- **4c)** What are the top 20 words in Food Starbucks menu items? Make a horizontal barplot sorted by count using `orientation="h"`.
+
+```{python}
+stop_words = {"the", "and", "with", "a", "an", "of", "in", "or", "no", "on"}
+
+word_counts = Counter(
+    w for name in sb_nutr["Item"].dropna()
+    for w in re.findall(r"[a-zA-Z]+", name.lower())
+    if len(w) > 2 and w not in stop_words
+)
+
+top20_words = [w for w, _ in word_counts.most_common(20)]
+
+# Top 20 words for Food
+food_counts = Counter(
+    w for name in sb_nutr[sb_nutr["Category"] == "Food"]["Item"].dropna()
+    for w in re.findall(r"[a-zA-Z]+", name.lower())
+    if len(w) > 2 and w not in stop_words
+)
+top20_food = pd.DataFrame(food_counts.most_common(20), columns=["word", "count"])
+
+# YOUR CODE HERE
+fig = px.bar(top20_food,
+            x = 'count', 
+            y='word', 
+            orientation='h'
+            )
+fig.update_layout(yaxis={'categoryorder': 'total ascending'})
+fig.show()
+```
+
+- 4c) Answer: The top words are sandwich, egg, chocolate. The bottom of the top 20 are croisson, butter, bar. 
+
+- **4d)** Create a scatterplot representing the relationship between calories and carbs. Color the points by category (Food or Beverage) and add `trendline="ols"` for each category. Is there a relationship, and do food or beverages tend to have more calories?
+
+```{python}
+# YOUR CODE HERE
+fig = px.scatter(sb_nutr, 
+    y='Calories', 
+    x="Carb. (g)", 
+    color="Category", 
+    trendline = "ols")
+fig.show()
+```
+
+- 4d) Answer: There does seem to be a relationship between calories and carbs as it is quite linear. And it does differ by category, with Food having an overall higher Calories per Carb g than Drinks. 
+
+### 5. `plotly` Boxplots
+
+- Create a boxplot of calorie content grouped by the top 10 item words.
+- Which top word is associated with the most calories?
+
+```{python}
+# Find top 10 words and tag each item
+top10_words = [w for w, _ in word_counts.most_common(10)]
+
+def find_top_word(item_name):
+    for w in top10_words:
+        if w in item_name.lower():
+            return w
+    return None
+
+sb_nutr["top_word"] = sb_nutr["Item"].apply(find_top_word)
+sb_top = sb_nutr.dropna(subset=["top_word"]).copy()
+
+# YOUR CODE HERE
+fig = px.box(sb_top, x="top_word", y="Calories", color="top_word")
+fig.update_layout(showlegend = False)
+fig.show()
+```
+
+- 5) Answer: Sandwich is the top word associated with the most calories as it has the largest max as well as the highest IQR.
+
+### 6. `plotly` 3D Scatterplot
+
+- Create a 3D scatterplot of Calories, Carbs, and Protein for items containing the top 10 words.
+- Do you see any patterns (clusters or trends)?
+
+```{python}
+fig = px.scatter_3d(
+    sb_top,
+    x="Calories",
+    y="Carb. (g)",
+    z="Protein (g)",
+    color="Category",
+    hover_data=["Item", "top_word"],
+    title="3D Scatter: Calories, Carbs, and Protein for Top-Word Items",
+    template="plotly_white",
+    opacity=0.7,
+)
+fig.update_layout(
+    scene=dict(
+        xaxis_title="Calories",
+        yaxis_title="Carbohydrates (g)",
+        zaxis_title="Protein (g)",
+    )
+)
+fig.show()
+```
+
+
+
+### 7. Choropleth Map
+
+- Create two choropleth maps: one for the number of stores per state, one for population by state. Add custom hover text. Display them separately.
+- Describe any differences.
+
+```{python}
+# Create hover text
+sb_locs_state["hover"] = (
+    "State: " + sb_locs_state["state"].astype(str) + "<br>" +
+    "Stores: " + sb_locs_state["n_stores"].astype(str) + "<br>" +
+    "Population: " + sb_locs_state["population"].astype(str)
+)
+
+# Map 1: Stores per state
+fig1 = go.Figure(go.Choropleth(
+    locations=sb_locs_state['state'],
+    z=sb_locs_state['n_stores'],
+    locationmode='USA-states',
+    text=sb_locs_state["hover"] ,
+    hoverinfo='text' ,# find hover info from text argument
+    colorscale='Greens',
+    colorbar_title='Number of Stores',
+))
+fig1.update_layout(
+    title='Number of Starbucks Stores by State',
+    geo=dict(scope="usa", projection_type="albers usa", showlakes=True),
+    height=450,
+)
+fig1.show()
+```
+
+```{python}
+# Map 2: Population per state
+fig2 = go.Figure(go.Choropleth(
+    locations=sb_locs_state['state'],
+    z=sb_locs_state['population'],
+    locationmode='USA-states',
+    text=sb_locs_state["hover"] ,
+    hoverinfo='text' ,# find hover info from text argument
+    colorscale='Greens',
+    colorbar_title='Population',
+))
+fig2.update_layout(
+    title='Population by State',
+    geo=dict(scope="usa", projection_type="albers usa", showlakes=True),
+    height=450,
+)
+fig2.show()
+```
+
+- 7) Answer: The difference between the two are mostly the same, so if you have a high population you have a high number of stores, apart from a couple of differences, such as Texas having a higher population on scale than the number of stores (darker green vs lighter green). The same with NY, but the opposite with WA. But overall the pattern is quite similar. 
+
+### 8. Dash Dashboard
+
+Build a simple interactive Dash dashboard for the Starbucks data. The app below provides a starting structure — save it as a `.py` file and run it with `python app.py`.
+
+The dashboard should include:
+- A dropdown to select a nutritional variable (Calories, Fat, Carbs, Protein, etc.)
+- A bar chart showing the mean value of that variable for the top 10 menu item words
+- A scatter plot of Calories vs. the selected variable, colored by Food/Beverage category
+- Fill in the `...` components
+
+```{python}
+#| eval: false
+
+# Save this as starbucks_dash.py and run with: python3 starbucks_dash.py
+
+from dash import Dash, dcc, html, Input, Output
+import plotly.express as px
+import pandas as pd
+from collections import Counter
+import re
+
+# Data preparation
+sb_nutr = pd.read_csv("starbucks-menu-nutrition.csv")
+sb_nutr.columns = sb_nutr.columns.str.strip()
+
+# Tokenize item names and find top 10 words
+words = Counter(
+    w for name in sb_nutr["Item"].dropna()
+    for w in re.findall(r"[a-zA-Z]+", name.lower())
+    if len(w) > 2
+)
+top10 = [w for w, _ in words.most_common(10)]
+
+def find_word(item_name):
+    for w in top10:
+        if w in item_name.lower():
+            return w
+    return None
+
+sb_nutr["top_word"] = sb_nutr["Item"].apply(find_word)
+sb_top = sb_nutr.dropna(subset=["top_word"]).copy()
+
+nutr_vars = ["Calories", "Fat (g)", "Carb. (g)", "Fiber (g)", "Protein (g)"]
+
+# App layout
+app = Dash(__name__)
+
+app.layout = html.Div([
+    html.H1("Starbucks Menu Nutrition Explorer",
+            style={"textAlign": "center", "fontFamily": "Arial"}),
+
+    html.Div([
+        html.Label("Select nutritional variable:", style={"fontWeight": "bold"}),
+        dcc.Dropdown(
+            id="nutr-dd",
+            options=[{"label": v, "value": v} for v in nutr_vars],
+            value="Calories",
+            clearable=False,
+            style={"width": "300px"}
+        ),
+    ], style={"padding": "20px 40px", "fontFamily": "Arial"}),
+
+    html.Div([
+        dcc.Graph(id="bar-chart", style={"width": "50%", "display": "inline-block"}),
+        dcc.Graph(id="scatter-chart", style={"width": "50%", "display": "inline-block"}),
+    ]),
+], style={"maxWidth": "1200px", "margin": "auto"})
+
+# Callbacks
+@app.callback(
+    Output("bar-chart", "figure"),
+    Output("scatter-chart", "figure"),
+    Input("nutr-dd", "value"),
+)
+def update(selected_var):
+    bar_df = (
+        sb_top.groupby("top_word")[selected_var]
+        .mean()
+        .reset_index()
+        .sort_values(selected_var, ascending=False)  # YOUR CODE HERE
+    )
+    bar_fig = px.bar(
+        bar_df, x='top_word', y=selected_var,  # YOUR CODE HERE
+        title=f"Mean {selected_var} by Top Menu Word",
+        labels={"top_word": "Menu Word"},
+        template="plotly_white",
+        color="top_word",
+        color_discrete_sequence=px.colors.qualitative.Set2,
+    )
+    bar_fig.update_layout(height=420, showlegend=False)
+
+    scatter_fig = px.scatter(
+        sb_top, x='top_word', y=selected_var,  # YOUR CODE HERE
+        color="Category",
+        hover_data=["Item", "top_word"],
+        title=f"Calories vs. {selected_var}",
+        template="plotly_white",
+        opacity=0.7,
+    )
+    scatter_fig.update_layout(height=420, hovermode="closest")
+
+    return bar_fig, scatter_fig  # YOUR CODE HERE
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
+```
+
+> **To run:** Copy the code above into a file called `starbucks_dash.py` in the same folder as your data, then run `python3 starbucks_dash.py` in your terminal. Open [http://127.0.0.1:8050](http://127.0.0.1:8050) in your browser.

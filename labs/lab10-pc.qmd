@@ -1,0 +1,333 @@
+---
+title: "Lab 10 - Parallel Computing"
+format:
+  html:
+    embed-resources: true
+jupyter: python3
+---
+
+# Learning goals
+
+- Evaluate whether a problem can be parallelized.
+- Vectorize code before reaching for parallelism.
+- Use `joblib.Parallel` to parallelize embarrassingly parallel workloads.
+- Measure and compare serial vs parallel execution time (speedup).
+
+# Lab description
+
+In this lab you will practice parallel computing in Python on your own machine. We will test it out on some simulations first, then try XGB on the `cps_clean` data from lab 8.
+
+# Deliverables
+
+Questions 1–3 answered (code + written responses), qmd and html uploaded to Quercus.
+
+---
+
+## Setup
+
+Check your system 
+
+
+```{python}
+#| eval: false
+# Uncomment to install
+# import subprocess
+#subprocess.run(["pip", "install", "xgboost", "scikit-learn"])
+```
+
+
+```{python}
+import multiprocessing
+import numpy as np
+import time
+import os
+import sys
+from joblib import Parallel, delayed
+
+# Session info
+import platform
+print(f"Python:          {sys.version}")
+print(f"Platform:        {platform.platform()}")
+print(f"CPUs available:  {multiprocessing.cpu_count()}")
+```
+
+---
+
+## Problem 1: Identifying parallelizable problems
+
+Take a few minutes to think about what you learned about parallelization.
+
+**1a.** List **three examples** of data science / scientific computing tasks that are well-suited to parallel computing. For each one, briefly explain *why* it is parallelizable (i.e., what makes the sub-tasks independent?).
+
+*Answer here.* 
+Something that is not parallelizable there is a strict sequential order we need to compute, but parallelizable can be computed seperately (w/o a specific order)
+- K-fold cross validation is well suited for parallel computing as there will be k subtasks where we choose one fold to be our test set, and this doesnt depend on the other subtasks. 
+- Bootstrap resemapling because it independently draws samples from the data, so they can be done in paralell as they dont affect each other 
+- Hyperparameter grid search where we can train for different hyperparameters can be done indepndently as we fit the model and evaluate individually each time. 
+
+**1b.** List **one example** of a computation that is **not** easily parallelized, and explain the bottleneck.
+
+*Answer here.*
+
+- Database changes/queries are not parallizable as one task changing the database can affect the other, so they cant be done simultaneously and should be done one after the other.
+- MCMC Sampling is when the proposed state depends on the accepted state of the previous step, so we cant compute the later step before the earlier one, and therfore cant be parallelized.
+
+**1c.** Look at the code below. Before running it, predict: will parallelizing this loop give a big speedup? Why or why not?
+
+```{python}
+import numpy as np
+
+def dot_products(args):
+    a, b = args
+    return np.dot(a, b)
+
+rng = np.random.default_rng(42)
+pairs = [(rng.standard_normal(1000), rng.standard_normal(1000)) for _ in range(500)]
+```
+
+*Your prediction here.*
+I think it will be sped up because dot product over the range can be done independtly so instead of a for loop of 500 tasks, we could do it at once. 
+
+Now time the serial and parallel versions and report the actual speedup.
+
+```{python}
+#| eval: false
+# Serial
+t0 = time.perf_counter()
+serial_results = [dot_products(p) for p in pairs]
+t_serial = time.perf_counter() - t0
+
+# Parallel — YOUR CODE HERE
+# Use Parallel(n_jobs=4)(delayed(dot_products)(p) for p in pairs)
+t0 = time.perf_counter()
+parallel_results = Parallel(n_jobs=4)(delayed(dot_products)(p) for p in pairs)
+t_parallel = time.perf_counter() - t0
+
+print(f"Serial:   {t_serial*1000:.1f} ms")
+print(f"Parallel: {t_parallel*1000:.1f} ms")
+print(f"Speedup:  {t_serial/t_parallel:.2f}x")
+```
+
+*Was your prediction correct? Explain the result.*
+No it was not correct. It was actually a slowdown, because dot product is very fast, so when we seperate tasks (forking process, pickling/unpickling) it will make it more difficult than normally. If a task is to simple, then parallelization will likely slow it down.
+---
+
+## Problem 2: Comparing Runtime of Models
+
+Before adding parallelism, make sure your code is already efficient. Parallelizing slow serial code just gives you many slow workers.
+
+**2a.** The function below generates an `n × k` matrix where each entry is drawn from a Poisson distribution with mean `lambda`. It builds the matrix row-by-row using `np.vstack`, which is inefficient. Write a faster version `fun1_fast` using a single NumPy call.
+
+```{python}
+#| eval: false
+import timeit
+
+def fun1(n=100, k=4, lam=4, seed=0):
+    rng = np.random.default_rng(seed)
+    x = None
+    for i in range(n):
+        row = rng.poisson(lam, k).reshape(1, -1)
+        x = row if x is None else np.vstack([x, row])
+    return x
+
+def fun1_fast(n=100, k=4, lam=4, seed=0):
+    # YOUR CODE HERE — use a single rng.poisson call
+    rng = np.random.default_rng(seed)
+    x = rng.poisson(lam,(n,k))
+    return x
+
+# Verify same shape
+print(fun1_fast().shape)
+print(fun1().shape)
+assert fun1().shape == fun1_fast().shape, "Shape mismatch!"
+
+# Benchmark
+t_slow = timeit.timeit(lambda: fun1(), number=50)
+t_fast = timeit.timeit(lambda: fun1_fast(), number=50)
+print(f"fun1:      {t_slow*1000/50:.2f} ms per call")
+print(f"fun1_fast: {t_fast*1000/50:.2f} ms per call")
+print(f"Speedup:   {t_slow/t_fast:.1f}x")
+```
+
+*How much faster is your version? Explain briefly why.*
+My version was 33x faster because the single line allocates a continguous block of memory, and fills it in while the other version builds it row by row.
+
+**2b.** The function below finds the **row index of the maximum value** in each column of a matrix using a Python loop. Write a faster vectorized version using NumPy.
+
+```{python}
+#| eval: false
+rng = np.random.default_rng(1234)
+x = rng.standard_normal((10, 10_000))
+
+def fun2(x):
+    result = []
+    for j in range(x.shape[1]):
+        result.append(np.argmax(x[:, j]))
+    return np.array(result)
+
+def fun2_fast(x):
+    # YOUR CODE HERE — hint: np.argmax has an axis argument
+    return np.argmax(x, axis = 0)
+
+# Verify
+assert np.array_equal(fun2(x), fun2_fast(x)), "Results differ!"
+
+t_slow = timeit.timeit(lambda: fun2(x), number=20)
+t_fast = timeit.timeit(lambda: fun2_fast(x), number=20)
+print(f"fun2:      {t_slow*1000/20:.2f} ms per call")
+print(f"fun2_fast: {t_fast*1000/20:.2f} ms per call")
+print(f"Speedup:   {t_slow/t_fast:.1f}x")
+```
+
+*Report the speedup and explain.*
+My speed up is 95.7x faster and this happens because we can do it in one call rather than a loop. 
+
+---
+
+## Problem 3: Parallel XGBoost Hyperparameter Search
+
+Hyperparameter tuning via grid search is a classic **embarrassingly parallel** task: every combination of hyperparameters can be trained and evaluated completely independently. We will use the **CPS dataset** from Lab 8 (select 2025 only) and train XGBoost classifiers to predict whether an individual is employed.
+
+### Data preparation
+
+Run this cell as-is (no changes needed):
+
+```{python}
+import pandas as pd
+import xgboost as xgb
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.metrics import roc_auc_score
+import matplotlib.pyplot as plt
+
+cps = pd.read_csv("https://raw.githubusercontent.com/JSC370/JSC370-2026/main/data/cps_clean.csv")
+cps = cps[cps['YEAR'].isin([2025])]
+
+# Binary outcome: 1 = employed, 0 = unemployed
+cps['employed'] = (cps['worker_cat'] != 'Unemployed').astype(int)
+
+# create race variables
+cps_enc = pd.get_dummies(cps, columns=['race_cat'], drop_first=True)
+
+# select features available before observing employment status
+feature_cols = ['AGE', 'female', 'married', 'educ_cat',
+                'metro_binary', 'us_citizen', 'has_children', 'NCHILD',
+                'race_cat_Black', 'race_cat_Other', 'race_cat_White']
+
+X = cps_enc[feature_cols].fillna(0).values.astype(float)
+y = cps_enc['employed'].values.astype(int)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.3, random_state=42
+)
+print(f"Train: {X_train.shape},  Test: {X_test.shape}")
+print(f"Employment rate (overall): {y.mean():.3f}")
+print(f"Employment rate (train):   {y_train.mean():.3f}")
+```
+
+### Hyperparameter grid
+
+- Fill in three values for each of these hyperparameters: `max_depth`, `learning_rate`, `n_estimators`, `subsample`
+
+```{python}
+# All combinations — 81 total
+param_grid = [
+    {'max_depth': d, 'learning_rate': lr, 'n_estimators': n, 'subsample': ss}
+    for d in [2,4,5]
+    for lr in [0.1,0.6,0.07]
+    for n in [10,17,20]
+    for ss in [0.5,0.7,0.9]
+]
+print(f"Total hyperparameter combinations: {len(param_grid)}")
+```
+
+**3a.** Complete the `fit_xgb` function below. Use **5-fold cross-validation on the training set** to evaluate each hyperparameter combination — this is the correct way to do hyperparameter search, since it avoids overfitting to a single train/test split. The held-out test set is reserved for final evaluation only (see 3c).
+
+Note: set `n_jobs=1` on both the XGBoost model and `cross_val_score` — parallelism comes from running multiple combinations simultaneously via `joblib`, not from internal threading.
+
+```{python}
+
+def fit_xgb(params):
+    """Evaluate one hyperparameter combination via 5-fold CV."""
+    # YOUR CODE HERE
+    # 1. Build an XGBClassifier with the given params, n_jobs=1,
+    #    eval_metric='logloss', random_state=42, verbosity=0
+    model = xgb.XGBClassifier(**params, n_jobs=1,eval_metric='logloss', random_state=42, verbosity=0)
+    # 2. Run cross_val_score with cv=5, scoring='roc_auc', n_jobs=1 on (X_train, y_train)
+    scores = cross_val_score(model, X_train, y_train, cv=5, scoring='roc_auc', n_jobs=1)
+    # 3. Return (params, scores.mean())
+    return (params, scores.mean())
+
+# Serial grid search
+t0 = time.time()
+serial_results = [fit_xgb(p) for p in param_grid]
+time_serial = time.time() - t0
+print(f"Serial grid search: {time_serial:.2f}s  ({len(param_grid)} combinations)")
+```
+
+**3b.** Parallelize the grid search using `joblib.Parallel` with **4 workers**. Measure the wall-clock time and compute the speedup.
+
+```{python}
+#| eval: false
+t0 = time.time()
+# YOUR CODE HERE
+# Use: Parallel(n_jobs=4)(delayed(fit_xgb)(p) for p in param_grid)
+parallel_results = Parallel(n_jobs=4)(delayed(fit_xgb)(p) for p in param_grid)
+time_parallel = time.time() - t0
+
+print(f"Parallel grid search (4 workers): {time_parallel:.2f}s")
+print(f"Speedup: {time_serial / time_parallel:.2f}x")
+```
+
+**3c.** Verify the serial and parallel CV AUC scores match, report the best hyperparameter combination, then refit the best model on the full training set and evaluate once on the held-out test set.
+
+```{python}
+#| eval: false
+# YOUR CODE HERE
+# 1. Extract mean CV AUC lists from serial_results and parallel_results
+print(serial_results)
+print(parallel_results)
+serial_aucs = [r[1] for r in serial_results]
+parallel_aucs = [r[1] for r in parallel_results]
+# 2. Assert they are close with np.allclose(..., atol=1e-6)
+assert np.allclose(serial_aucs, parallel_aucs, atol=1e-6)
+print("results match")
+# 3. Find the entry in parallel_results with the highest mean CV AUC
+best = max(parallel_results, key=lambda x: x[1])
+print(f"best mean: {best[1]}")
+print(f"best param: {best[0]}")
+# 4. Refit an XGBClassifier with best params on X_train, evaluate on X_test
+best_model = xgb.XGBClassifier(**best[0], n_jobs=1,eval_metric='logloss', random_state=42, verbosity=0)
+best_model.fit(X_train, y_train)
+
+#    using roc_auc_score — this is the final unbiased test performance
+test_auc = roc_auc_score(y_test, best_model.predict_proba(X_test)[:, 1])
+print(f"test auc: {test_auc}")
+```
+
+**3d.** Experiment with 1, 2, 4, and `multiprocessing.cpu_count()` workers. Print a timing table and plot speedup vs number of workers.
+
+```{python}
+#| eval: false
+worker_counts = [1, 2, 4, multiprocessing.cpu_count() - 1]
+times = {}
+
+for n_workers in worker_counts:
+    t0 = time.time()
+    Parallel(n_jobs=n_workers)(delayed(fit_xgb)(p) for p in param_grid)
+    times[n_workers] = time.time() - t0
+    print(f"workers={n_workers}: {times[n_workers]:.2f}s  "
+          f"speedup={time_serial / times[n_workers]:.2f}x")
+
+fig, ax = plt.subplots(figsize=(6, 4))
+ax.plot(list(times.keys()), [time_serial / t for t in times.values()], marker='o')
+ax.axhline(1, color='gray', linestyle='--', label='serial baseline')
+ax.set_xlabel("Number of workers")
+ax.set_ylabel("Speedup")
+ax.set_title(f"Parallel speedup: XGBoost grid search ({len(param_grid)} combos)")
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+*Does speedup scale linearly with the number of workers? Why or why not? What overhead is present even in an embarrassingly parallel task like this?*
+my worker counts is 1, 2, 4, 7 (my cpu count is 8) and we see that the speedup does increase with the number of workers, but it is not linear. The benefit of having an extra worker is actually decreasing. The overhead includes worker startup (forks worker per parallel call), result serialization (all outputs from each worker requires pickling), load imbalance (some hyperparam combos are better than others), memory bandwidth (all workers compete for same memory bus). This is why its not linear, and the speedup plateaus. 

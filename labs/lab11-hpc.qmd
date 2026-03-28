@@ -1,0 +1,641 @@
+---
+title: "Lab 11 - Job Submission on teach.cs Cluster"
+format:
+  html:
+    embed-resources: true
+---
+
+##### Download lab `.qmd` [here](https://github.com/JSC370/JSC370-2026/blob/main/labs/lab11/lab11-hpc.qmd)
+
+# Learning goals
+
+- Connect to the `teach.cs` computing cluster via SSH.
+- Understand the SLURM workload manager and cluster hardware.
+- Write Python scripts suitable for non-interactive cluster execution.
+- Submit batch jobs with `sbatch` and monitor them with `sinfo` / `squeue`.
+- Request multiple CPU cores and measure parallel speedup on the cluster.
+- Retrieve and interpret job output files.
+
+# Lab description
+
+In this lab you will move from running parallel Python code on your laptop (Lab 10) to submitting jobs on the **University of Toronto CS Teaching Labs cluster**. The cluster is managed by the [SLURM](https://slurm.schedmd.com/) workload manager, which queues and allocates resources across multiple nodes.
+
+All commands in this lab are run in a **terminal** (not in a Quarto notebook). Use this `.qmd` file to document your answers and paste terminal output.
+
+# Deliverables
+
+All questions answered, with required terminal output pasted in. Upload your `.qmd` and rendered `.html` to Quercus.
+
+---
+
+## Background: The teach.cs Cluster
+
+The cluster has three node types, each available as a SLURM partition:
+
+| Partition | Nodes | CPU cores/node | RAM | GPUs |
+|-----------|-------|---------------|-----|------|
+| `squid`   | squid01–07 | 24 (dual 12-core Xeon Silver 4310) | 256 GB | 4× NVIDIA RTX A4500 (20 GB) |
+| `coral`   | coral01–08 | 8 (single 8-core Xeon Silver 4208) | 96 GB | 2× NVIDIA RTX A4000 (16 GB) |
+| `prawn`   | prawn01–12 | 8 (single 8-core Xeon Silver 4208) | 96 GB | 2× NVIDIA RTX 2080 Ti (11 GB) |
+
+`jsc370` is a separate partition for us to use in this course and we have access to all of the above nodes.
+
+For the lab:
+
+- Access the login node via `ssh <utorid>@teach.cs.toronto.edu`.
+- You **must** submit jobs through SLURM — direct SSH login to compute nodes is not allowed.
+- You may use VS Code (preferred) or terminal
+- Get used to nano/vim
+
+---
+
+## Problem 1: Connecting and exploring the cluster
+
+**1a.** Open a terminal and SSH into the teach.cs login node:
+
+```bash
+ssh <your-utorid>@teach.cs.toronto.edu
+```
+
+Once logged in, check the cluster status:
+
+```bash
+sinfo
+sinfo -p jsc370       # show only the jsc370 partition
+squeue                # all running/pending jobs
+squeue -u $USER       # your jobs only
+```
+
+*Paste the output of `sinfo` here.*
+PARTITION AVAIL  TIMELIMIT  NODES  STATE NODELIST
+jsc370       up   infinite      1    mix squid01
+jsc370       up   infinite     26   idle coral[01-08],prawn[01-12],squid[02-07]
+
+**1b.** Check how many CPU cores are available right now and what Python version is installed:
+
+```bash
+python3 --version
+which python3
+nproc              # cores on the login node (don't run compute-heavy work here!)
+```
+
+*Paste the output here.*
+Python 3.13.7
+/local/bin/python3
+48
+
+**1c.** Make a working directory for this lab on the cluster:
+
+```bash
+mkdir -p ~/jsc370/lab11
+cd ~/jsc370/lab11
+```
+
+---
+
+## Problem 2: Your first batch job
+
+We will start with the simplest possible job: print some system information from a compute node.
+
+**2a.** Copy the script below and save it as `lab11.py` on the cluster. You can use `nano lab11.py`, `vim lab11.py`, or create it locally and `scp` it over.
+
+```python
+#!/usr/bin/env python3
+import sys, platform, multiprocessing, os
+
+print("=== System Info from Compute Node ===")
+print(f"Hostname:       {platform.node()}")
+print(f"Python version: {sys.version}")
+print(f"OS:             {platform.platform()}")
+print(f"CPU cores:      {multiprocessing.cpu_count()}")
+print(f"SLURM job ID:   {os.environ.get('SLURM_JOB_ID', 'N/A')}")
+print(f"SLURM node:     {os.environ.get('SLURM_NODELIST', 'N/A')}")
+print(f"CPUs allocated: {os.environ.get('SLURM_CPUS_PER_TASK', 'N/A')}")
+```
+
+**2b.** Write a SLURM batch script `lab11.sh` to run it. Fill in the blanks:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=lab11
+#SBATCH --partition=____________       # use the jsc370 partition
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=1G
+#SBATCH --time=00:05:00
+#SBATCH --output=lab11_%j.out    # %j is replaced by the job ID
+#SBATCH --error=lab11_%j.err
+
+python3 lab11.py
+```
+
+**2c.** Submit the job and monitor it:
+
+```bash
+sbatch lab11.sh            # submit
+squeue -u $USER            # check status (PD = pending, R = running, CG = completing)
+```
+
+Once it completes, view the output:
+
+```bash
+cat lab11_*.out
+```
+
+*Paste the output here. How many CPU cores does the compute node report? Is it different from the 1 core you requested?*
+
+It has 24 CPU cores, but only 1 is allocated. 
+=== System Info from Compute Node ===
+Hostname:       squid01
+Python version: 3.13.7 (main, Sep  2 2025, 16:35:01) [GCC 13.3.0]
+OS:             Linux-6.8.0-90-generic-x86_64-with-glibc2.39
+CPU cores:      24
+SLURM job ID:   202812
+SLURM node:     squid01
+CPUs allocated: 1
+
+
+---
+
+## Problem 3: Requesting multiple cores — parallel flu simulation
+
+Now we submit the flu simulation from Lecture 10. The goal is to compare serial vs parallel execution **on the cluster** and see how speedup changes with core count.
+
+**3a.** Save the following script as `flu_parallel.py` on the cluster. Read through it — it accepts two command-line arguments: `n_vaccinated` and `n_workers`.
+
+```python
+#!/usr/bin/env python3
+"""
+flu_parallel.py — parallel influenza simulation on the cluster.
+Usage: python3 flu_parallel.py <n_vaccinated> <n_workers>
+"""
+import sys
+import numpy as np
+import multiprocessing
+import time
+import os
+
+# --- Simulation constants ---
+SUSCEPTIBLE, INFECTED, RECOVERED, DECEASED = 0, 1, 2, 3
+probs_transmit = [0.60, 0.25, 0.40, 0.08]
+prob_death = 0.05
+
+def simulate_flu(pop_size=900, n_sick=10, n_vaccinated=0, n_steps=20, seed=None):
+    rng = np.random.default_rng(seed)
+    n = int(np.sqrt(pop_size))
+    status = np.zeros((n, n), dtype=int)
+    sick_idx = rng.choice(pop_size, n_sick, replace=False)
+    status.flat[sick_idx] = INFECTED
+    vaccinated = np.zeros(pop_size, dtype=bool)
+    if n_vaccinated > 0:
+        vacc_idx = rng.choice(pop_size, n_vaccinated, replace=False)
+        vaccinated[vacc_idx] = True
+    vaccinated = vaccinated.reshape(n, n)
+    deceased_counts = []
+    for _ in range(n_steps):
+        new_status = status.copy()
+        for i in range(n):
+            for j in range(n):
+                if status[i, j] == SUSCEPTIBLE:
+                    for di in [-1, 0, 1]:
+                        for dj in [-1, 0, 1]:
+                            if di == 0 and dj == 0:
+                                continue
+                            ni_, nj_ = (i + di) % n, (j + dj) % n
+                            if status[ni_, nj_] == INFECTED:
+                                both      = vaccinated[i, j] and vaccinated[ni_, nj_]
+                                only_self = vaccinated[i, j] and not vaccinated[ni_, nj_]
+                                only_nb   = not vaccinated[i, j] and vaccinated[ni_, nj_]
+                                p = probs_transmit[3*both + 2*only_self + only_nb]
+                                if rng.random() < p:
+                                    new_status[i, j] = INFECTED
+                                    break
+                        else:
+                            continue
+                        break
+                elif status[i, j] == INFECTED:
+                    if rng.random() < prob_death:
+                        new_status[i, j] = DECEASED
+                    else:
+                        new_status[i, j] = RECOVERED
+        status = new_status
+        deceased_counts.append((status == DECEASED).sum())
+    return np.array(deceased_counts)
+
+# Top-level so it can be pickled by multiprocessing
+_n_vaccinated = 0
+def run_one(seed):
+    return simulate_flu(pop_size=900, n_sick=10,
+                        n_vaccinated=_n_vaccinated,
+                        n_steps=20, seed=seed)
+
+if __name__ == "__main__":
+    n_vaccinated = int(sys.argv[1]) if len(sys.argv) > 1 else 450
+    n_workers    = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    seeds = list(range(100))
+
+    # Make n_vaccinated available to workers via the module-level variable
+    _n_vaccinated = n_vaccinated
+
+    # Serial baseline
+    t0 = time.time()
+    results_serial = [run_one(s) for s in seeds]
+    t_serial = time.time() - t0
+
+    # Parallel run
+    ctx = multiprocessing.get_context("fork")
+    t0 = time.time()
+    with ctx.Pool(processes=n_workers) as pool:
+        results_parallel = pool.map(run_one, seeds)
+    t_parallel = time.time() - t0
+
+    arr = np.array(results_parallel)
+    job_id  = os.environ.get("SLURM_JOB_ID", "local")
+    node    = os.environ.get("SLURM_NODELIST", "local")
+    alloc   = os.environ.get("SLURM_CPUS_PER_TASK", str(n_workers))
+
+    print(f"Job {job_id} on {node} | CPUs allocated: {alloc}")
+    print(f"n_vaccinated={n_vaccinated}, n_workers={n_workers}, n_sims=100")
+    print(f"Serial time:   {t_serial:.2f}s")
+    print(f"Parallel time: {t_parallel:.2f}s")
+    print(f"Speedup:       {t_serial/t_parallel:.2f}x")
+    print(f"Mean deceased at step 20: {arr[:, -1].mean():.1f} "
+          f"± {arr[:, -1].std():.1f}")
+```
+
+**3b.** Write a batch script `flu_1core.sh` that requests **1 core** and runs the simulation with 450 vaccinated individuals:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=flu_1core
+#SBATCH --partition=jsc370
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4G
+#SBATCH --time=00:15:00
+#SBATCH --output=flu_1core_%j.out
+#SBATCH --error=flu_1core_%j.err
+
+python3 flu_parallel.py 450 1
+```
+
+Submit it:
+
+```bash
+sbatch flu_1core.sh
+```
+
+**3c.** Write a second batch script `flu_4core.sh` that requests **4 cores** and runs the same simulation with 4 workers. Only two lines need to change from 3b — which ones?
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=flu_4core
+#SBATCH --partition=jsc370
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=____________   # fill in
+#SBATCH --mem=4G
+#SBATCH --time=00:15:00
+#SBATCH --output=flu_4core_%j.out
+#SBATCH --error=flu_4core_%j.err
+
+python3 flu_parallel.py 450 ____________   # fill in
+```
+
+Submit it:
+
+```bash
+sbatch flu_4core.sh
+```
+
+**3d.** Monitor both jobs until they finish:
+
+```bash
+squeue -u $USER
+```
+
+Then collect the results:
+
+```bash
+cat flu_1core_*.out
+cat flu_4core_*.out
+```
+
+*Paste both outputs. Fill in the table:*
+Job 202857 on squid01 | CPUs allocated: 1
+n_vaccinated=450, n_workers=1, n_sims=100
+Serial time:   2.77s
+Parallel time: 2.56s
+Speedup:       1.08x
+Mean deceased at step 20: 40.7 ± 6.5
+Job 202874 on squid01 | CPUs allocated: 4
+n_vaccinated=450, n_workers=4, n_sims=100
+Serial time:   2.59s
+Parallel time: 0.82s
+Speedup:       3.17x
+Mean deceased at step 20: 40.7 ± 6.5
+
+| Script | Cores requested | Serial time (s) | Parallel time (s) | Speedup |
+|--------|----------------|----------------|------------------|---------|
+| `flu_1core.sh` | 1 | 2.77|2.56 |1.08x |
+| `flu_4core.sh` | 4 | 2.59|0.82 |3.17x |
+
+*Is the speedup on the cluster similar to what you observed on your laptop in Lab 10? What factors might cause differences?*
+Personally, this is much faster. The difference is the server is faster than my laptop.
+
+---
+
+## Problem 4: Sweeping vaccination coverage
+
+Now submit a **job array** — one job per vaccination level — so all five vaccination levels run in parallel across different nodes. This demonstrates how cluster computing enables large-scale parameter sweeps.
+
+**4a.** Save the following script as `flu_sweep.py`:
+
+```python
+#!/usr/bin/env python3
+"""
+flu_sweep.py — one vaccination level per SLURM array task.
+SLURM_ARRAY_TASK_ID controls which vaccination level is used.
+Usage: automatically called by SLURM array job.
+"""
+import os, time
+import numpy as np
+import multiprocessing
+
+SUSCEPTIBLE, INFECTED, RECOVERED, DECEASED = 0, 1, 2, 3
+probs_transmit = [0.60, 0.25, 0.40, 0.08]
+prob_death = 0.05
+
+def simulate_flu(pop_size=900, n_sick=10, n_vaccinated=0, n_steps=20, seed=None):
+    rng = np.random.default_rng(seed)
+    n = int(np.sqrt(pop_size))
+    status = np.zeros((n, n), dtype=int)
+    sick_idx = rng.choice(pop_size, n_sick, replace=False)
+    status.flat[sick_idx] = INFECTED
+    vaccinated = np.zeros(pop_size, dtype=bool)
+    if n_vaccinated > 0:
+        vacc_idx = rng.choice(pop_size, n_vaccinated, replace=False)
+        vaccinated[vacc_idx] = True
+    vaccinated = vaccinated.reshape(n, n)
+    deceased_counts = []
+    for _ in range(n_steps):
+        new_status = status.copy()
+        for i in range(n):
+            for j in range(n):
+                if status[i, j] == SUSCEPTIBLE:
+                    for di in [-1, 0, 1]:
+                        for dj in [-1, 0, 1]:
+                            if di == 0 and dj == 0:
+                                continue
+                            ni_, nj_ = (i + di) % n, (j + dj) % n
+                            if status[ni_, nj_] == INFECTED:
+                                both      = vaccinated[i, j] and vaccinated[ni_, nj_]
+                                only_self = vaccinated[i, j] and not vaccinated[ni_, nj_]
+                                only_nb   = not vaccinated[i, j] and vaccinated[ni_, nj_]
+                                p = probs_transmit[3*both + 2*only_self + only_nb]
+                                if rng.random() < p:
+                                    new_status[i, j] = INFECTED
+                                    break
+                        else:
+                            continue
+                        break
+                elif status[i, j] == INFECTED:
+                    if rng.random() < prob_death:
+                        new_status[i, j] = DECEASED
+                    else:
+                        new_status[i, j] = RECOVERED
+        status = new_status
+        deceased_counts.append((status == DECEASED).sum())
+    return np.array(deceased_counts)
+
+_n_vaccinated = 0
+def run_one(seed):
+    return simulate_flu(pop_size=900, n_sick=10,
+                        n_vaccinated=_n_vaccinated,
+                        n_steps=20, seed=seed)
+
+if __name__ == "__main__":
+    # Each array task gets a different vaccination level
+    vacc_levels = [0, 225, 450, 675, 900]   # 0%, 25%, 50%, 75%, 100%
+    task_id = int(os.environ.get("SLURM_ARRAY_TASK_ID", 0))
+    n_vaccinated = vacc_levels[task_id]
+    n_workers = int(os.environ.get("SLURM_CPUS_PER_TASK", 4))
+
+    _n_vaccinated = n_vaccinated
+
+    ctx = multiprocessing.get_context("fork")
+    t0 = time.time()
+    with ctx.Pool(processes=n_workers) as pool:
+        results = pool.map(run_one, range(100))
+    elapsed = time.time() - t0
+
+    arr = np.array(results)
+    vacc_pct = 100 * n_vaccinated // 900
+    print(f"task={task_id}  vacc={n_vaccinated} ({vacc_pct}%)  "
+          f"workers={n_workers}  time={elapsed:.2f}s")
+    print(f"Mean deceased (step 20): {arr[:, -1].mean():.2f} "
+          f"± {arr[:, -1].std():.2f}")
+    # Save per-task results for later aggregation
+    np.save(f"results_vacc{n_vaccinated}.npy", arr)
+    print(f"Saved results_vacc{n_vaccinated}.npy")
+```
+
+**4b.** Write the job array batch script `flu_array.sh`. A job array uses `--array=0-4` to launch 5 tasks (IDs 0–4), one per vaccination level. Each task uses 4 cores.
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=flu_sweep
+#SBATCH --partition=jsc370
+#SBATCH --array=____________          # fill in: launch tasks 0 through 4
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=4G
+#SBATCH --time=00:15:00
+#SBATCH --output=flu_sweep_%A_%a.out  # %A = array job ID, %a = task ID
+#SBATCH --error=flu_sweep_%A_%a.err
+
+python3 flu_sweep.py
+```
+
+Submit and monitor:
+
+```bash
+sbatch flu_array.sh
+squeue -u $USER          # you should see 5 tasks (or some running, some pending)
+```
+
+**4c.** Once all tasks finish, collect the results:
+
+```bash
+cat flu_sweep_*_0.out   # 0% vaccination
+cat flu_sweep_*_1.out   # 25% vaccination
+cat flu_sweep_*_2.out   # 50% vaccination
+cat flu_sweep_*_3.out   # 75% vaccination
+cat flu_sweep_*_4.out   # 100% vaccination
+```
+
+*Paste the output for all 5 tasks. Fill in the table:*
+task=0  vacc=0 (0%)  workers=4  time=0.82s
+Mean deceased (step 20): 45.85 ± 7.20
+Saved results_vacc0.npy
+task=1  vacc=225 (25%)  workers=4  time=0.86s
+Mean deceased (step 20): 44.48 ± 6.80
+Saved results_vacc225.npy
+task=2  vacc=450 (50%)  workers=4  time=1.14s
+Mean deceased (step 20): 40.67 ± 6.45
+Saved results_vacc450.npy
+task=3  vacc=675 (75%)  workers=4  time=1.32s
+Mean deceased (step 20): 15.59 ± 6.37
+Saved results_vacc675.npy
+task=4  vacc=900 (100%)  workers=4  time=1.40s
+Mean deceased (step 20): 1.21 ± 1.10
+Saved results_vacc900.npy
+
+
+| Task ID | Vaccination | Mean deceased (step 20) | Std |
+|---------|-------------|------------------------|-----|
+| 0 | 0% (0/900) |45.85 |7.20 |
+| 1 | 25% (225/900) |44.48 |6.80 |
+| 2 | 50% (450/900) |40.67 |6.45 |
+| 3 | 75% (675/900) |15.59 |6.37 |
+| 4 | 100% (900/900) |1.21 |1.10 |
+
+*Describe the trend. At what vaccination level do deaths drop most sharply?*
+The mean deceased decreases as the vaccination rate increases, and the sharpest drop occurs between level 2 and 3, where it drops my 25. 
+
+---
+
+## Problem 5: Aggregating and plotting results locally
+
+After the array job completes, download the `.npy` result files to your laptop and make a plot.
+
+**5a.** Copy the files from the cluster to your laptop (run this in a **local** terminal, not on the cluster):
+
+```bash
+scp "<utorid>@teach.cs.toronto.edu:~/jsc370/lab11/results_vacc*.npy" <path-to-a-directory>
+```
+
+If `scp` does not work, you can download the `.npy` files directly from GitHub:
+
+```bash
+git clone https://github.com/BullDF/lab11-npy-files
+cd lab11-npy-files
+```
+
+**5b.** Run the following Python code locally to produce a summary plot:
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+
+vacc_levels = [0, 225, 450, 675, 900]
+vacc_labels = ["0%", "25%", "50%", "75%", "100%"]
+colors = ["tomato", "orange", "gold", "steelblue", "mediumseagreen"]
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+# Left: boxplot of final deceased count across 100 simulations
+data = []
+for v in vacc_levels:
+    arr = np.load(f"results_vacc{v}.npy")
+    data.append(arr[:, -1])   # final time step
+
+axes[0].boxplot(data, labels=vacc_labels, patch_artist=True,
+                boxprops=dict(facecolor="lightblue"),
+                medianprops=dict(color="black"), showfliers=False)
+axes[0].set_xlabel("Vaccination coverage")
+axes[0].set_ylabel("Deceased at step 20")
+axes[0].set_title("Distribution of deaths by vaccination level\n(100 simulations each)")
+
+# Right: mean contagion curve over time
+steps = np.arange(1, 21)
+for v, label, color in zip(vacc_levels, vacc_labels, colors):
+    arr = np.load(f"results_vacc{v}.npy")
+    axes[1].plot(steps, arr.mean(axis=0), label=label, color=color)
+axes[1].set_xlabel("Time step")
+axes[1].set_ylabel("Mean cumulative deceased")
+axes[1].set_title("Contagion curve by vaccination coverage")
+axes[1].legend(title="Vaccination")
+
+plt.tight_layout()
+plt.savefig("flu_cluster_results.png", dpi=150)
+print("Saved flu_cluster_results.png")
+plt.show()
+```
+
+*Include the plot in your submission (paste the image or attach the file). What does the plot reveal about herd immunity?*
+The box plot shows that as vaccination coverage increases, the decesed decreases, with a dramatic decrease from 50% to 75% as well as 75% to 100%. The contagion curve plot also shows that as vaccination coverages increases the height of the curve (aka the cumulative deceased) also decreases. 
+---
+
+## Problem 6: Interactive session (bonus)
+
+Sometimes you want to test code interactively on a compute node before submitting a batch job. SLURM's `srun` command opens an interactive shell on a node.
+
+**6a.** Request an interactive session on the `jsc370` partition with 2 cores for 30 minutes:
+
+```bash
+srun --partition=jsc370 --ntasks=1 --cpus-per-task=2 --mem=2G \
+     --time=00:30:00 --pty bash
+```
+
+Once the shell opens, you are on a compute node. Verify:
+
+```bash
+hostname
+nproc
+python3 -c "import multiprocessing; print(multiprocessing.cpu_count())"
+```
+
+*Paste the output. Does `nproc` match `--cpus-per-task=2` or the physical core count of the node?*
+squid01
+2
+24
+
+The nproc matches the cpu per task (2), and not the physical core count of the node (24)
+
+**6b.** Run a quick parallel test directly in the interactive session:
+
+```bash
+python3 -c "
+import multiprocessing, time
+ctx = multiprocessing.get_context('fork')
+def sq(x): return x * x
+t0 = time.time()
+with ctx.Pool(2) as p:
+    r = p.map(sq, range(1000000))
+print(f'Done in {time.time()-t0:.2f}s, sum={sum(r)}')
+"
+```
+
+*Paste the output.*
+Done in 0.26s, sum=333332833333500000
+
+Exit the interactive session when done:
+
+```bash
+exit
+```
+
+---
+
+## Summary
+
+Answer the following questions in your own words:
+
+1. What is the role of SLURM on the teach.cs cluster? Why can't you just SSH directly to a compute node?
+
+2. What is a SLURM job array, and when is it more convenient than writing separate batch scripts?
+
+3. On the cluster you requested `--cpus-per-task=4`. On your laptop in Lab 10 you also used 4 workers. Was the speedup similar? What hardware differences might explain any gap?
+
+4. You ran 100 simulations × 5 vaccination levels = 500 simulations total. Roughly how long would this take serially on a single core (extrapolate from your timing results)? How long did it take with the job array?
+
+*Your answers here.*
+
+1. 
+SLURM directs our jobs to the partions we have permission to use. There are protections disallowing users to ssh straight into a node because that would break the policies SLURM has in place. 
+
+2. The slurm job array is a way to submit similar jobs at once, using the same batch script where each job differs by some parameter. It is more efficient to run a job array with 100 different arguments than writing 100 different scripts. If the jobs are very different or there are dependencies between jobs then we shouldnt use it. 
+
+3. The speedup was similar between the cluster and my laptop and this could be because the task parallized well and didnt depend on hardware specific factors. If it were different then this could be explained by CPU clock speed or cache size.
+
+4. Each batch of 100 simulations took about 2.7 seconds (serially not parallel) so running 500 would take about 14-15 seconds. Using the job array, the 5 batches ran in parallel across different nodes, taking a maximum of 1.40s seconds. So job arrays can significantly reduce total runtime by parallizing the independent tasks. 
